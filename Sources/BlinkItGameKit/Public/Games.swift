@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// G1~G4：給宿主極簡使用（HomeView 只要丟 G1()...G4()）。
+/// 點擊模式
 public struct G1: View {
     public init() {}
     public var body: some View {
@@ -8,6 +8,7 @@ public struct G1: View {
     }
 }
 
+/// 眨眼模式
 public struct G2: View {
     public init() {}
     public var body: some View {
@@ -15,6 +16,7 @@ public struct G2: View {
     }
 }
 
+/// 張嘴模式
 public struct G3: View {
     public init() {}
     public var body: some View {
@@ -22,6 +24,7 @@ public struct G3: View {
     }
 }
 
+/// 預留入口（之後可換成第 4 個正式遊戲）
 public struct G4: View {
     public init() {}
     public var body: some View {
