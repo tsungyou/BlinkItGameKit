@@ -13,14 +13,6 @@ import UIKit
 
 // MARK: - SwiftUI
 
-private enum Theme {
-    static let accent = Color(red: 0.941, green: 0.725, blue: 0.035)
-    static let textPrimary = Color(red: 0.118, green: 0.137, blue: 0.161)
-    static let textSecondary = Color(red: 0.439, green: 0.478, blue: 0.541)
-    static let divider = Color(red: 0.918, green: 0.925, blue: 0.933)
-    static let surface = Color.white
-}
-
 struct ShootGameView: View {
     @Environment(\.dismiss) private var dismiss
     private let fixedTrigger: InputTrigger?
