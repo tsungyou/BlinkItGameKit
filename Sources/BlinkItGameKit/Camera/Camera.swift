@@ -134,10 +134,13 @@ final class CameraSessionManager: NSObject, ObservableObject {
     var isFaceLandmarkDebugEnabled = false {
         didSet {
             if !isFaceLandmarkDebugEnabled {
-                // DispatchQueue.main.async { [weak self] in
-                //     self?.faceLandmarkDebugSnapshot = nil
-                // }
-                faceLandmarkDebugSnapshot = nil
+                if Thread.isMainThread {
+                    faceLandmarkDebugSnapshot = nil
+                } else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.faceLandmarkDebugSnapshot = nil
+                    }
+                }
             }
         }
     }
@@ -152,10 +155,13 @@ final class CameraSessionManager: NSObject, ObservableObject {
                 blinkBaselineEAR = 0
                 blinkHasBaseline = false
                 blinkClosedLatch = false
-                // DispatchQueue.main.async { [weak self] in
-                //     self?.expressionDebugState = nil
-                // }
-                expressionDebugState = nil
+                if Thread.isMainThread {
+                    expressionDebugState = nil
+                } else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.expressionDebugState = nil
+                    }
+                }
             }
         }
     }

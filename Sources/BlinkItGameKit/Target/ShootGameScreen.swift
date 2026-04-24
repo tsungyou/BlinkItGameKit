@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import ReplayKit
 import SpriteKit
 import SwiftUI
 import UIKit
@@ -16,11 +17,19 @@ import UIKit
 struct ShootGameView: View {
     @Environment(\.dismiss) private var dismiss
     private let fixedTrigger: InputTrigger?
+    private let skin: RotationTargetSkin
+    private let config: RotationTargetConfig
     @State private var trigger: InputTrigger
     @State private var sessionKey = UUID()
 
-    init(fixedTrigger: InputTrigger? = nil) {
+    init(
+        fixedTrigger: InputTrigger? = nil,
+        skin: RotationTargetSkin = .init(),
+        config: RotationTargetConfig = .init()
+    ) {
         self.fixedTrigger = fixedTrigger
+        self.skin = skin
+        self.config = config
         _trigger = State(initialValue: fixedTrigger ?? .tap)
     }
 
@@ -28,7 +37,7 @@ struct ShootGameView: View {
         ZStack {
             CameraBackgroundView()
 
-            ShootGameRoot(trigger: trigger)
+            ShootGameRoot(trigger: trigger, skin: skin, config: config)
                 .id(sessionKey)
 
             VStack {
@@ -78,10 +87,13 @@ struct ShootGameView: View {
 
 private struct ShootGameRoot: View {
     let trigger: InputTrigger
+    let skin: RotationTargetSkin
+    let config: RotationTargetConfig
 
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var camera = CameraSessionManager.shared
     @StateObject private var engine: GameEngine
+    @StateObject private var recordingManager = GameRecordingManager()
     @State private var showGameOver = false
     @State private var didStartGame = false
 
@@ -89,11 +101,14 @@ private struct ShootGameRoot: View {
     @State private var introDetected = false
     @State private var countdownValue: Int?
     @State private var introSessionID = UUID()
+    @State private var introDetectedImage: UIImage?
 
-    init(trigger: InputTrigger) {
+    init(trigger: InputTrigger, skin: RotationTargetSkin, config: RotationTargetConfig) {
         self.trigger = trigger
+        self.skin = skin
+        self.config = config
         let size = UIScreen.main.bounds.size
-        let scene = GameEngine.makeScene(size: size)
+        let scene = GameEngine.makeScene(size: size, skin: skin, config: config)
         let input = GameEngine.makeInput(trigger: trigger)
         _engine = StateObject(wrappedValue: GameEngine(scene: scene, input: input))
     }
@@ -126,6 +141,28 @@ private struct ShootGameRoot: View {
                 introOverlay
             }
 
+            if recordingManager.isRecording {
+                VStack {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(.red)
+                            .frame(width: 10, height: 10)
+                            .opacity(0.95)
+                        Text("REC")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .padding(.top, 10)
+                    .padding(.trailing, 12)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .transition(.opacity)
+            }
+
 #if DEBUG
             debugMetricsOverlay
 #endif
@@ -136,6 +173,7 @@ private struct ShootGameRoot: View {
         }
         .onDisappear {
             stopFaceIntroListening()
+            recordingManager.stopRecordingIfNeeded()
         }
         .onChange(of: engine.isGameOver) { ended in
             if ended {
@@ -158,6 +196,21 @@ private struct ShootGameRoot: View {
                 Text("分數 \(engine.finalScore)")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(Theme.textSecondary)
+                Button("分享錄影") {
+                    recordingManager.stopRecordingForSharing()
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Theme.surface)
+                .foregroundStyle(Theme.textPrimary)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Theme.divider, lineWidth: 1)
+                )
+                .disabled(!recordingManager.isRecording)
+                .opacity(recordingManager.isRecording ? 1 : 0.55)
                 Button("返回") { dismiss() }
                     .font(.headline)
                     .frame(maxWidth: .infinity)
@@ -176,6 +229,10 @@ private struct ShootGameRoot: View {
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Theme.divider, lineWidth: 1))
             .padding(24)
         }
+        .sheet(item: $recordingManager.previewControllerItem) { item in
+            RecordingPreviewSheet(controller: item.controller)
+                .ignoresSafeArea()
+        }
     }
 
     private var introOverlay: some View {
@@ -188,12 +245,20 @@ private struct ShootGameRoot: View {
                     .font(.system(size: 38, weight: .heavy))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
-
+                
                 if introDetected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 64, weight: .bold))
-                        .foregroundStyle(.green)
-                        .transition(.scale.combined(with: .opacity))
+                    if let introDetectedImage {
+                        Image(uiImage: introDetectedImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 64, height: 64)
+                            .transition(.scale.combined(with: .opacity))
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 54, weight: .bold))
+                            .foregroundStyle(.green)
+                            .transition(.scale.combined(with: .opacity))
+                    }
                 }
 
                 if let n = countdownValue {
@@ -237,6 +302,7 @@ private struct ShootGameRoot: View {
     private func startGameIfNeeded() {
         guard !didStartGame else { return }
         didStartGame = true
+        recordingManager.startRecording()
         engine.startGame()
     }
 
@@ -245,6 +311,7 @@ private struct ShootGameRoot: View {
         introDetected = false
         countdownValue = nil
         didStartGame = false
+        introDetectedImage = loadImageFromModule(named: skin.targetImageName)
 
         let sessionID = UUID()
         introSessionID = sessionID
@@ -319,6 +386,15 @@ private struct ShootGameRoot: View {
         camera.isFaceAnalysisEnabled = false
     }
 
+    private func loadImageFromModule(named imageName: String?) -> UIImage? {
+        guard let imageName,
+              let url = Bundle.module.url(forResource: imageName, withExtension: "png"),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return UIImage(data: data)
+    }
+
 #if DEBUG
     private var debugMetricsOverlay: some View {
         VStack {
@@ -365,4 +441,78 @@ private struct ShootGameRoot: View {
         return String(format: "%.3f", v)
     }
 #endif
+}
+
+private struct RecordingPreviewSheet: UIViewControllerRepresentable {
+    let controller: RPPreviewViewController
+
+    func makeUIViewController(context: Context) -> RPPreviewViewController {
+        controller
+    }
+
+    func updateUIViewController(_ uiViewController: RPPreviewViewController, context: Context) {}
+}
+
+@MainActor
+private final class GameRecordingManager: NSObject, ObservableObject, RPPreviewViewControllerDelegate {
+    struct PreviewItem: Identifiable {
+        let id = UUID()
+        let controller: RPPreviewViewController
+    }
+
+    @Published var previewControllerItem: PreviewItem?
+    @Published private(set) var isRecording = false
+
+    private var isStopping = false
+
+    func startRecording() {
+        let recorder = RPScreenRecorder.shared()
+        guard !isRecording else { return }
+        guard !recorder.isRecording else {
+            isRecording = true
+            return
+        }
+        recorder.isMicrophoneEnabled = true
+        recorder.startRecording { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isRecording = (error == nil)
+            }
+        }
+    }
+
+    func stopRecordingForSharing() {
+        guard isRecording, !isStopping else { return }
+        isStopping = true
+        RPScreenRecorder.shared().stopRecording { [weak self] previewController, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isRecording = false
+                self.isStopping = false
+
+                if let previewController {
+                    previewController.previewControllerDelegate = self
+                    self.previewControllerItem = PreviewItem(controller: previewController)
+                }
+            }
+        }
+    }
+
+    func stopRecordingIfNeeded() {
+        guard isRecording, !isStopping else { return }
+        isStopping = true
+        RPScreenRecorder.shared().stopRecording { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.isRecording = false
+                self?.isStopping = false
+            }
+        }
+    }
+
+    nonisolated func previewControllerDidFinish(_ previewController: RPPreviewViewController) {
+        DispatchQueue.main.async { [weak self] in
+            previewController.dismiss(animated: true)
+            self?.previewControllerItem = nil
+        }
+    }
 }

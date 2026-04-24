@@ -70,8 +70,12 @@ final class GameEngine: ObservableObject {
         return CGSize(width: max(320, ww), height: max(568, hh))
     }
 
-    static func makeScene(size: CGSize) -> BaseGameScene {
-        let scene = ShootGameScene()
+    static func makeScene(
+        size: CGSize,
+        skin: RotationTargetSkin = .init(),
+        config: RotationTargetConfig = .init()
+    ) -> BaseGameScene {
+        let scene = ShootGameScene(skin: skin, config: config)
         scene.size = safeSceneSize(size)
         scene.scaleMode = .resizeFill
         return scene

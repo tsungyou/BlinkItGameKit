@@ -1,5 +1,7 @@
 import Foundation
 import SpriteKit
+import AudioToolbox
+import UIKit
 
 struct PhysicsCategory {
     static let none: UInt32 = 0
@@ -9,15 +11,60 @@ struct PhysicsCategory {
 
 final class ShootGameScene: BaseGameScene, @preconcurrency SKPhysicsContactDelegate {
     let targetContainer = SKNode()
+    private let skin: RotationTargetSkin
+    private let config: RotationTargetConfig
 
-    var bulletsCount = 10
-    var currentSpeed: CGFloat = 2.0
+    var bulletsCount: Int
+    var currentSpeed: CGFloat
     var score = 0
-    var totalTargets = 8
+    var totalTargets: Int
 
     private var labelAmmo: SKLabelNode?
+    private lazy var targetTexture: SKTexture? = {
+        guard let imageName = skin.targetImageName,
+              let url = Bundle.module.url(forResource: imageName, withExtension: "png"),
+              let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return SKTexture(image: image)
+    }()
+    private lazy var bulletTexture: SKTexture? = {
+        guard let imageName = skin.bulletImageName,
+              let url = Bundle.module.url(forResource: imageName, withExtension: "png"),
+              let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return SKTexture(image: image)
+    }()
+    private lazy var hitSoundID: SystemSoundID? = {
+        guard let fileName = config.hitSoundFileName else { return nil }
+        let nsName = fileName as NSString
+        let base = nsName.deletingPathExtension
+        let ext = nsName.pathExtension.isEmpty ? "wav" : nsName.pathExtension
+        guard let url = Bundle.module.url(forResource: base, withExtension: ext) else { return nil }
+        var soundID: SystemSoundID = 0
+        let status = AudioServicesCreateSystemSoundID(url as CFURL, &soundID)
+        return status == kAudioServicesNoError ? soundID : nil
+    }()
+    private var ammoHintLabel: SKLabelNode?
+    private var didFinishByNoAmmo = false
 
     private static let weaponPlaceholderName = "weaponPlaceholder"
+
+    init(skin: RotationTargetSkin = .init(), config: RotationTargetConfig = .init()) {
+        self.skin = skin
+        self.config = config
+        self.bulletsCount = config.bulletsCount
+        self.currentSpeed = config.initialRotationSpeed
+        self.totalTargets = config.totalTargets
+        super.init(size: .zero)
+    }
+
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func didMove(to view: SKView) {
         backgroundColor = .clear
@@ -50,6 +97,9 @@ final class ShootGameScene: BaseGameScene, @preconcurrency SKPhysicsContactDeleg
         labelAmmo = ammo
 
         root.addChild(ammo)
+        let hint = makeAmmoHintLabel()
+        ammoHintLabel = hint
+        root.addChild(hint)
         addChild(root)
 
         layoutHUD()
@@ -66,13 +116,23 @@ final class ShootGameScene: BaseGameScene, @preconcurrency SKPhysicsContactDeleg
         return n
     }
 
-    private func layoutHUD() {
-        let pad: CGFloat = 20
+    private func makeAmmoHintLabel() -> SKLabelNode {
+        let n = SKLabelNode(text: "")
+        n.fontName = "PingFangTC-Medium"
+        n.fontSize = 13
+        n.fontColor = UIColor.white.withAlphaComponent(0.85)
+        n.horizontalAlignmentMode = .center
+        n.verticalAlignmentMode = .baseline
+        n.alpha = 0
+        return n
+    }
 
+    private func layoutHUD() {
         let bottomPad: CGFloat = 36
         labelAmmo?.horizontalAlignmentMode = .center
         labelAmmo?.verticalAlignmentMode = .baseline
         labelAmmo?.position = CGPoint(x: size.width / 2, y: bottomPad)
+        ammoHintLabel?.position = CGPoint(x: size.width / 2, y: bottomPad + 20)
     }
 
     private func refreshHUD() {
@@ -116,17 +176,23 @@ final class ShootGameScene: BaseGameScene, @preconcurrency SKPhysicsContactDeleg
     private func setupTarget() {
         let radius: CGFloat = 100
         let angleIncrement = (CGFloat.pi * 2) / CGFloat(totalTargets)
+        let targetRadius: CGFloat = 20
 
         for i in 0..<totalTargets {
-            let targetNode = SKShapeNode(circleOfRadius: 20)
-            targetNode.fillColor = .blue
-            targetNode.strokeColor = .white
+            let targetNode: SKNode
+            if let targetTexture {
+                targetNode = SKSpriteNode(texture: targetTexture, size: CGSize(width: 40, height: 40))
+            } else {
+                let fallback = SKShapeNode(circleOfRadius: targetRadius)
+                fallback.fillColor = .blue
+                fallback.strokeColor = .white
+                targetNode = fallback
+            }
             targetNode.name = "target"
-
             let angle = angleIncrement * CGFloat(i)
             targetNode.position = CGPoint(x: radius * cos(angle), y: radius * sin(angle))
 
-            targetNode.physicsBody = SKPhysicsBody(circleOfRadius: 20)
+            targetNode.physicsBody = SKPhysicsBody(circleOfRadius: targetRadius)
             targetNode.physicsBody?.isDynamic = true
             targetNode.physicsBody?.categoryBitMask = PhysicsCategory.target
             targetNode.physicsBody?.contactTestBitMask = PhysicsCategory.projectile
@@ -138,8 +204,30 @@ final class ShootGameScene: BaseGameScene, @preconcurrency SKPhysicsContactDeleg
 
     private func startRotation() {
         targetContainer.removeAllActions()
-        let rotateAction = SKAction.rotate(byAngle: .pi * 2, duration: TimeInterval(10.0 / currentSpeed))
+        let rotateDuration = config.rotationBaseDuration / max(currentSpeed, 0.1)
+        let rotateAction = SKAction.rotate(byAngle: .pi * 2, duration: rotateDuration)
         targetContainer.run(SKAction.repeatForever(rotateAction))
+    }
+
+    override func update(_ currentTime: TimeInterval) {
+        super.update(currentTime)
+        guard config.keepTargetUpright else { return }
+
+        let counterRotation = -targetContainer.zRotation
+        for targetNode in targetContainer.children {
+            targetNode.zRotation = counterRotation
+        }
+        updateAmmoHint()
+        evaluateFailureIfOutOfAmmo()
+    }
+
+    private func updateAmmoHint() {
+        let isWaitingLastShot = bulletsCount == 0
+            && children.contains { $0.name == "projectile" }
+            && !targetContainer.children.isEmpty
+
+        ammoHintLabel?.text = isWaitingLastShot ? "子彈用完，等待最後一發結果..." : ""
+        ammoHintLabel?.alpha = isWaitingLastShot ? 1 : 0
     }
 
     override func handleInput(action: GameAction) {
@@ -150,26 +238,29 @@ final class ShootGameScene: BaseGameScene, @preconcurrency SKPhysicsContactDeleg
     }
 
     private func tryShoot() {
-        guard bulletsCount > 0 else { return }
-        shootProjectile()
+        guard bulletsCount > 0 else {
+            // User may tap again after ammo runs out; treat it as a final-state check trigger.
+            evaluateFailureIfOutOfAmmo()
+            return
+        }
+        let isLastShot = (bulletsCount == 1)
+        shootProjectile(isLastShot: isLastShot)
         bulletsCount -= 1
         refreshHUD()
         if bulletsCount == 0 {
-            let wait = SKAction.wait(forDuration: 0.55)
-            let check = SKAction.run { [weak self] in
-                guard let self else { return }
-                if !self.targetContainer.children.isEmpty {
-                    self.targetContainer.removeAllActions()
-                    self.gameOver(didWin: false)
-                }
-            }
-            run(SKAction.sequence([wait, check]))
+            evaluateFailureIfOutOfAmmo()
         }
     }
 
-    private func shootProjectile() {
-        let projectile = SKShapeNode(circleOfRadius: 10)
-        projectile.fillColor = .yellow
+    private func shootProjectile(isLastShot: Bool = false) {
+        let projectile: SKNode
+        if let bulletTexture {
+            projectile = SKSpriteNode(texture: bulletTexture, size: CGSize(width: 20, height: 20))
+        } else {
+            let fallback = SKShapeNode(circleOfRadius: 10)
+            fallback.fillColor = .yellow
+            projectile = fallback
+        }
         projectile.position = CGPoint(x: size.width / 2, y: size.height * 0.1)
         projectile.name = "projectile"
 
@@ -182,9 +273,28 @@ final class ShootGameScene: BaseGameScene, @preconcurrency SKPhysicsContactDeleg
 
         addChild(projectile)
 
-        let moveAction = SKAction.move(to: CGPoint(x: size.width / 2, y: size.height + 50), duration: 0.5)
+        let moveAction = SKAction.move(
+            to: CGPoint(x: size.width / 2, y: size.height + 50),
+            duration: config.bulletTravelDuration
+        )
         let removeAction = SKAction.removeFromParent()
-        projectile.run(SKAction.sequence([moveAction, removeAction]))
+        let finalShotCheck = SKAction.run { [weak self] in
+            guard let self, isLastShot else { return }
+            self.evaluateFailureIfOutOfAmmo()
+        }
+        projectile.run(SKAction.sequence([moveAction, removeAction, finalShotCheck]))
+    }
+
+    private func evaluateFailureIfOutOfAmmo() {
+        guard !didFinishByNoAmmo else { return }
+        guard bulletsCount == 0 else { return }
+        let hasProjectileInFlight = children.contains { $0.name == "projectile" }
+        guard !hasProjectileInFlight else { return }
+        guard !targetContainer.children.isEmpty else { return }
+
+        didFinishByNoAmmo = true
+        targetContainer.removeAllActions()
+        gameOver(didWin: false)
     }
 
     func didBegin(_ contact: SKPhysicsContact) {
@@ -200,26 +310,31 @@ final class ShootGameScene: BaseGameScene, @preconcurrency SKPhysicsContactDeleg
         }
 
         if firstBody.categoryBitMask == PhysicsCategory.projectile && secondBody.categoryBitMask == PhysicsCategory.target {
-            if let projectileNode = firstBody.node as? SKShapeNode,
-               let targetNode = secondBody.node as? SKShapeNode {
+            if let projectileNode = firstBody.node,
+               let targetNode = secondBody.node {
                 projectileDidCollideWithTarget(projectile: projectileNode, target: targetNode)
             }
         }
     }
 
-    private func projectileDidCollideWithTarget(projectile: SKShapeNode, target: SKShapeNode) {
+    private func projectileDidCollideWithTarget(projectile: SKNode, target: SKNode) {
         projectile.removeFromParent()
         target.removeFromParent()
+        if let hitSoundID {
+            AudioServicesPlaySystemSound(hitSoundID)
+        }
 
         score += 1
         currentScore = score
 
-        currentSpeed += 1.0
+        currentSpeed += config.speedIncrementPerHit
         startRotation()
         refreshHUD()
 
         if targetContainer.children.isEmpty {
             levelCompleted()
+        } else {
+            evaluateFailureIfOutOfAmmo()
         }
     }
 

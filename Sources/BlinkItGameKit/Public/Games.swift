@@ -1,38 +1,29 @@
 import SwiftUI
 
-/// 點擊模式
-public struct G1: View {
-    public init() {}
-    public var body: some View {
-        RotationTargetGameView(trigger: .tap)
-    }
-}
+/// 單一對外遊戲入口：宿主自行決定觸發方式與素材。
+public struct RouletteShootingGame: View {
+    private let trigger: RotationTargetTrigger
+    private let targetImageName: String?
+    private let bulletImageName: String?
+    private let config: RotationTargetConfig
 
-/// 眨眼模式
-public struct G2: View {
-    public init() {}
-    public var body: some View {
-        RotationTargetGameView(trigger: .blink)
+    public init(
+        trigger: RotationTargetTrigger,
+        targetImageName: String? = nil,
+        bulletImageName: String? = nil,
+        config: RotationTargetConfig = .init()
+    ) {
+        self.trigger = trigger
+        self.targetImageName = targetImageName
+        self.bulletImageName = bulletImageName
+        self.config = config
     }
-}
 
-/// 張嘴模式
-public struct G3: View {
-    public init() {}
     public var body: some View {
-        RotationTargetGameView(trigger: .mouthOpen)
-    }
-}
-
-/// 預留入口（之後可換成第 4 個正式遊戲）
-public struct G4: View {
-    public init() {}
-    public var body: some View {
-        ZStack {
-            Color.blue.opacity(0.15).ignoresSafeArea()
-            Text("G4 預留")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-        }
+        RotationTargetGameView(
+            trigger: trigger,
+            skin: .init(targetImageName: targetImageName, bulletImageName: bulletImageName),
+            config: config
+        )
     }
 }

@@ -20,7 +20,9 @@ let package = Package(
         .target(
             name: "BlinkItGameKit",
             dependencies: [],
-            resources: []
+            resources: [
+                .process("Resources")
+            ]
         )
     ]
 )
