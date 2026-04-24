@@ -21,6 +21,7 @@ struct ShootGameView: View {
     private let config: RotationTargetConfig
     @State private var trigger: InputTrigger
     @State private var sessionKey = UUID()
+    @StateObject private var recordingManager = GameRecordingManager()
 
     init(
         fixedTrigger: InputTrigger? = nil,
@@ -37,12 +38,21 @@ struct ShootGameView: View {
         ZStack {
             CameraBackgroundView()
 
-            ShootGameRoot(trigger: trigger, skin: skin, config: config)
+            ShootGameRoot(
+                trigger: trigger,
+                skin: skin,
+                config: config,
+                recordingManager: recordingManager
+            )
                 .id(sessionKey)
 
             VStack {
                 HStack {
-                    Button { dismiss() } label: {
+                    Button {
+                        recordingManager.discardRecordingIfNeeded {
+                            dismiss()
+                        }
+                    } label: {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(Theme.textPrimary)
@@ -93,7 +103,7 @@ private struct ShootGameRoot: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var camera = CameraSessionManager.shared
     @StateObject private var engine: GameEngine
-    @StateObject private var recordingManager = GameRecordingManager()
+    @ObservedObject var recordingManager: GameRecordingManager
     @State private var showGameOver = false
     @State private var didStartGame = false
 
@@ -103,10 +113,16 @@ private struct ShootGameRoot: View {
     @State private var introSessionID = UUID()
     @State private var introDetectedImage: UIImage?
 
-    init(trigger: InputTrigger, skin: RotationTargetSkin, config: RotationTargetConfig) {
+    init(
+        trigger: InputTrigger,
+        skin: RotationTargetSkin,
+        config: RotationTargetConfig,
+        recordingManager: GameRecordingManager
+    ) {
         self.trigger = trigger
         self.skin = skin
         self.config = config
+        self.recordingManager = recordingManager
         let size = UIScreen.main.bounds.size
         let scene = GameEngine.makeScene(size: size, skin: skin, config: config)
         let input = GameEngine.makeInput(trigger: trigger)
@@ -173,7 +189,7 @@ private struct ShootGameRoot: View {
         }
         .onDisappear {
             stopFaceIntroListening()
-            recordingManager.stopRecordingIfNeeded()
+            recordingManager.discardRecordingIfNeeded()
         }
         .onChange(of: engine.isGameOver) { ended in
             if ended {
@@ -211,7 +227,11 @@ private struct ShootGameRoot: View {
                 )
                 .disabled(!recordingManager.isRecording)
                 .opacity(recordingManager.isRecording ? 1 : 0.55)
-                Button("返回") { dismiss() }
+                Button("返回") {
+                    recordingManager.discardRecordingIfNeeded {
+                        dismiss()
+                    }
+                }
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
@@ -464,6 +484,7 @@ private final class GameRecordingManager: NSObject, ObservableObject, RPPreviewV
     @Published private(set) var isRecording = false
 
     private var isStopping = false
+    private var pendingDiscardCompletions: [() -> Void] = []
 
     func startRecording() {
         let recorder = RPScreenRecorder.shared()
@@ -507,6 +528,36 @@ private final class GameRecordingManager: NSObject, ObservableObject, RPPreviewV
                 self?.isStopping = false
             }
         }
+    }
+
+    func discardRecordingIfNeeded(completion: (() -> Void)? = nil) {
+        if let completion {
+            pendingDiscardCompletions.append(completion)
+        }
+
+        let recorder = RPScreenRecorder.shared()
+        guard recorder.isRecording else {
+            isRecording = false
+            flushDiscardCompletions()
+            return
+        }
+        guard !isStopping else { return }
+
+        isStopping = true
+        recorder.stopRecording { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isRecording = false
+                self.isStopping = false
+                self.flushDiscardCompletions()
+            }
+        }
+    }
+
+    private func flushDiscardCompletions() {
+        let completions = pendingDiscardCompletions
+        pendingDiscardCompletions.removeAll()
+        completions.forEach { $0() }
     }
 
     nonisolated func previewControllerDidFinish(_ previewController: RPPreviewViewController) {
